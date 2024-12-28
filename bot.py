@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 import os
 from bs4 import BeautifulSoup
 
-load_dotenv(".env")
+load_dotenv("/home/melendo/botMeriendo/.env")
 TOKEN = os.getenv("TOKEN")
 TRGGKEY = os.getenv("TRGGKEY")
 print("Cargado token bot")
