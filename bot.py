@@ -89,7 +89,10 @@ ytdl_format_options = {
     'noplaylist': True,
     'quiet': True
 }
-ffmpeg_options = {'options': '-vn'}
+ffmpeg_options = {
+    'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
+    'options': '-vn'
+}
 ytdl = youtube_dl.YoutubeDL(ytdl_format_options)
 
 # Cola de reproducción por servidor
@@ -128,8 +131,8 @@ async def leave(ctx):
     else:
         await ctx.send("No estoy en ningún canal de voz.")
 
-@bot.command(name="play", help="Reproduce música de YouTube", category="Música")
-async def play(ctx, *, url):
+@bot.command(name="play", help="Reproduce música de YouTube (acepta URL o búsqueda)", category="Música")
+async def play(ctx, *, query):
     if not ctx.voice_client:
         if ctx.author.voice:
             await ctx.author.voice.channel.connect()
@@ -138,11 +141,15 @@ async def play(ctx, *, url):
             return
 
     async with ctx.typing():
-        info = ytdl.extract_info(url, download=False)
-        if "entries" in info:  # si fuese playlist
-            info = info["entries"][0]
+        # Si parece un enlace, lo usamos tal cual
+        if query.startswith("http"):
+            info = ytdl.extract_info(query, download=False)
+        else:
+            # Buscar en YouTube
+            info = ytdl.extract_info(f"ytsearch:{query}", download=False)['entries'][0]
 
         audio_url = info['url']
+        source = await discord.FFmpegOpusAudio.from_probe(audio_url, **ffmpeg_options)
         title = info['title']
 
         guild_id = ctx.guild.id
@@ -159,6 +166,7 @@ async def play(ctx, *, url):
                 after=lambda e: play_next(ctx)
             )
             await ctx.send(f"▶️ Reproduciendo: **{title}**")
+
 
 @bot.command(name="skip", help="Salta a la siguiente canción", category="Música")
 async def skip(ctx):
