@@ -1,0 +1,6 @@
+discord.py[voice]
+python-dotenv
+requests
+beautifulsoup4
+yt-dlp
+PyNaCl
