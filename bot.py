@@ -1,9 +1,7 @@
 import discord
 from discord.ext import commands
-import requests
 from dotenv import load_dotenv
 import os
-from bs4 import BeautifulSoup
 import yt_dlp as youtube_dl
 
 # Cargar variables de entorno
@@ -13,7 +11,7 @@ TRGGKEY = os.getenv("TRGGKEY")
 print("Cargado token bot")
 
 # Configuración del bot
-descripcion = "Bot todopoderoso hijo de Melendo y hermano de Meriendo"
+descripcion = "Bot todopoderoso del linaje Meriendo"
 prefix = "!"
 intents = discord.Intents.all()
 intents.message_content = True
@@ -35,9 +33,6 @@ async def on_ready():
 async def on_member_join(member):
     await member.send(f'Bienvenido al server {member.name}, bonito nombre por cierto!')
 
-@bot.event
-async def on_member_remove(member):
-    await bot.get_channel(762326170799702016).send(f'{member.name} se ha ido a mi mi mi zzz... zzz... zzz...')
 
 # -------------------- COMANDOS BÁSICOS -------------------- #
 
@@ -49,38 +44,6 @@ async def pingpong(ctx):
 async def saludar(ctx):
     await ctx.send(f'Hola {ctx.author.mention}!')
 
-# -------------------- GOOGLE SEARCH -------------------- #
-
-@bot.command(name='buscar', help='Busca en google y devuelve el primer resultado', category='Utilidad')
-async def buscar(ctx, *, query):
-    url = f"https://www.google.com/search?q={query}"
-    headers = {"User-Agent": "Mozilla/5.0"}
-    response = requests.get(url, headers=headers)
-
-    if response.status_code == 200:
-        soup = BeautifulSoup(response.text, 'html.parser')
-        first_result = soup.find('div', class_='tF2Cxc')
-        if first_result:
-            title = first_result.find('h3').text
-            link = first_result.find('a')['href']
-            await ctx.send(f"Título: {title}\nEnlace: {link}")
-        else:
-            await ctx.send("No se encontraron resultados.")
-    else:
-        await ctx.send("Error al realizar la búsqueda.")
-
-# -------------------- ROCKET LEAGUE -------------------- #
-
-@bot.command(name='rangoRL', help='Devuelve rango en 2s', category='Utilidad')
-async def rangoRL(ctx, *, query):
-    url = f"https://public-api.tracker.gg/v2/rocket-league/standard/profile/epic/{query}/sessions?"
-    headers = {"TRN-Api-Key": TRGGKEY}
-    response = requests.get(url, headers=headers)
-    if response.status_code == 200: 
-        datos = response.json()
-        await ctx.send(f"El rango del jugador {query} es:\nEnlace del tracker: {url}")
-    else:
-        await ctx.send("Error al realizar la búsqueda.")
 
 # -------------------- MÚSICA -------------------- #
 
