@@ -1,0 +1,25 @@
+name: Deploy to Raspberry Pi
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch: # Permite ejecutarlo manualmente desde la web
+
+jobs:
+  deploy:
+    runs-on: self-hosted # Esto le dice que use TU Raspberry Pi, no los servidores de GitHub
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Create .env file
+        run: |
+          echo "${{ secrets.ENV_FILE }}" > .env
+
+      - name: Build and Deploy
+        run: |
+          # Detiene los contenedores, reconstruye la imagen y levanta en segundo plano
+          docker compose up -d --build --force-recreate
+          
+          # Limpia imágenes antiguas para no llenar la SD de la Pi
+          docker image prune -f

@@ -128,6 +128,7 @@ ytdl_format_options = {
     'format': 'bestaudio/best',
     'noplaylist': False,
     'quiet': True,
+    'no_warnings': True,
     'cookiefile': 'cookies.txt',
     'extractor_args': {
         'youtube': {
