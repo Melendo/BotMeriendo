@@ -7,4 +7,4 @@ services:
       - .env
     volumes:
       # Opcional: Si quieres que los logs o descargas persistan fuera, añádelos aquí
-      - ./bot.py:/app/bot.py  # Útil para editar el código sin reconstruir la imagen (solo reiniciando)
+      - ./src:/app/src  # Útil para editar el código sin reconstruir la imagen (solo reiniciando)
