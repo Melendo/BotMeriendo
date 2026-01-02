@@ -1,5 +1,7 @@
 FROM python:3.11-slim
 
+ENV PYTHONDONTWRITEBYTECODE=1
+
 WORKDIR /app
 
 # Instalar ffmpeg Y Node.js

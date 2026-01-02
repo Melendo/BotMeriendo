@@ -2,9 +2,11 @@ services:
   discord-bot:
     build: .
     container_name: bot_melendo
-    restart: unless-stopped  # Si la Pi se reinicia, el bot arranca solo
+    restart: unless-stopped # Si la Pi se reinicia, el bot arranca solo
     env_file:
       - .env
+    environment:
+      - PYTHONDONTWRITEBYTECODE=1
     volumes:
       # Opcional: Si quieres que los logs o descargas persistan fuera, añádelos aquí
-      - ./src:/app/src  # Útil para editar el código sin reconstruir la imagen (solo reiniciando)
+      - ./src:/app/src # Útil para editar el código sin reconstruir la imagen (solo reiniciando)
