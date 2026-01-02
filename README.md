@@ -1,9 +1,9 @@
 
-# 🤖 botMeriendo
+# BotMeriendo
 
 Bot de música y utilidades para Discord, modularizado y listo para desplegar con Docker.
 
-## 🚀 Instalación y Despliegue
+## Instalación y Despliegue
 
 ### Requisitos Previos
 - [Docker](https://docs.docker.com/get-docker/) y [Docker Compose](https://docs.docker.com/compose/install/) instalados.
@@ -28,7 +28,7 @@ Bot de música y utilidades para Discord, modularizado y listo para desplegar co
    TRGGKEY=!
    ```
 
-### 🐳 Ejecución con Docker (Recomendado)
+### Ejecución con Docker (Recomendado)
 Para iniciar el bot en segundo plano:
 ```bash
 docker-compose up -d --build
@@ -44,7 +44,7 @@ Para detener el bot:
 docker-compose down
 ```
 
-### 💻 Ejecución Local (Desarrollo)
+### Ejecución Local (Desarrollo)
 1. Instala las dependencias de sistema (necesitas `ffmpeg`):
    - **Debian/Ubuntu**: `sudo apt install ffmpeg`
    - **Windows**: Descargar y añadir al PATH.
@@ -61,7 +61,7 @@ docker-compose down
    python src/main.py
    ```
 
-## 📂 Estructura del Proyecto
+## Estructura del Proyecto
 ```
 botMeriendo/
 ├── src/
@@ -79,7 +79,7 @@ botMeriendo/
 └── requirements.txt   # Dependencias Python
 ```
 
-## ✨ Características
+## Características
 - **Música**: Reproducción desde YouTube (búsqueda y enlaces direcos), playlists, control de cola.
 - **Auto-Desconexión**: El bot sale del canal de voz si se queda solo por 1 minuto.
 - **Gestión de Errores**: Feedback visual en Discord cuando algo falla.
