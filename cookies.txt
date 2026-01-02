@@ -1,0 +1,9 @@
+# Netscape HTTP Cookie File
+# http://curl.haxx.se/rfc/cookie_format.html
+# This is a generated file!  Do not edit.
+
+# To solve "Sign in to confirm you’re not a bot" errors:
+# 1. Install "Get cookies.txt LOCALLY" extension for Chrome/Firefox
+# 2. Go to YouTube and log in
+# 3. Export cookies to this file (cookies.txt) locally
+# 4. Restart the bot

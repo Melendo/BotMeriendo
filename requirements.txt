@@ -1,5 +1,5 @@
 discord.py[voice]
 python-dotenv
 requests
-yt-dlp>=2024.04.09
+yt-dlp>=2024.12.0
 PyNaCl

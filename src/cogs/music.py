@@ -13,6 +13,7 @@ ytdl_format_options = {
     'noplaylist': False,
     'quiet': True,
     'no_warnings': True,
+    'ignoreerrors': True,
     'cookiefile': 'cookies.txt',
     'extractor_args': {
         'youtube': {
