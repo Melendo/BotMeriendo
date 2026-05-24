@@ -143,26 +143,34 @@ class Music(commands.Cog):
 
                 if "spotify.com" in query:
                     await ctx.send("🔍 Analizando playlist de Spotify, esto puede tardar un poco...")
-                    # Usamos yt-dlp para extraer solo los títulos de las canciones de la lista de Spotify
-                    with youtube_dl.YoutubeDL({'extract_flat': True, 'quiet': True}) as ydl:
-                        info = await asyncio.to_thread(ydl.extract_info, query, download=False)
-                    
-                    entries = list(info.get('entries', []))
-                    added_count = 0
-                    for entry in entries:
-                        title = entry.get('title')
-                        if title:
-                            # Buscamos en YouTube el título de la canción de Spotify
-                            search_result = await asyncio.to_thread(ytdl.extract_info, f"ytsearch:{title}", download=False)
-                            tracks = search_result.get('entries', [])
-                            if tracks:
-                                track_info = tracks[0]
-                                video_url = track_info.get('webpage_url')
-                                video_title = track_info.get('title')
-                                music_queues[guild_id].append((video_url, video_title))
-                                added_count += 1
-                    
-                    await ctx.send(f"✅ Añadidas {added_count} canciones de Spotify a la cola.")
+                    try:
+                        # Usamos yt-dlp para extraer solo los títulos de las canciones de la lista de Spotify
+                        # Es posible que necesite las cookies también para playlists públicas si hay bloqueo
+                        with youtube_dl.YoutubeDL({'extract_flat': True, 'quiet': True, 'cookiefile': 'cookies.txt'}) as ydl:
+                            info = await asyncio.to_thread(ydl.extract_info, query, download=False)
+                        
+                        entries = list(info.get('entries', []))
+                        added_count = 0
+                        for entry in entries:
+                            title = entry.get('title')
+                            # Algunos extractores de spotify ponen el artista en el título
+                            if title:
+                                # Buscamos en YouTube el título de la canción de Spotify
+                                search_result = await asyncio.to_thread(ytdl.extract_info, f"ytsearch:{title}", download=False)
+                                tracks = search_result.get('entries', [])
+                                if tracks:
+                                    track_info = tracks[0]
+                                    video_url = track_info.get('webpage_url')
+                                    video_title = track_info.get('title')
+                                    if video_url:
+                                        music_queues[guild_id].append((video_url, video_title))
+                                        added_count += 1
+                        
+                        await ctx.send(f"✅ Añadidas {added_count} canciones de Spotify a la cola.")
+                    except Exception as e:
+                        logger.error(f"Error procesando playlist de Spotify: {e}")
+                        await ctx.send(f"Error procesando la playlist: {e}")
+                        return
                     
                 elif query.startswith("http"):
                     # OPTIMIZACION: Usamos extract_flat=True para obtener solo metadatos rapido
