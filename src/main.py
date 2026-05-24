@@ -36,8 +36,22 @@ async def main():
         await bot.start(TOKEN)
 
 if __name__ == "__main__":
+    # Manejo limpio de cierre con señal de sistema
+    import signal
+    loop = asyncio.get_event_loop()
+    
+    def shutdown():
+        tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+        for task in tasks:
+            task.cancel()
+        logger.info("Cierre del bot iniciado...")
+
+    loop.add_signal_handler(signal.SIGTERM, shutdown)
+    loop.add_signal_handler(signal.SIGINT, shutdown)
+
     try:
         asyncio.run(main())
-    except KeyboardInterrupt:
-        # Manejo limpio de cierre con Ctrl+C
-        pass
+    except (asyncio.CancelledError, KeyboardInterrupt):
+        logger.info("Bot detenido correctamente.")
+    finally:
+        logger.info("Limpieza finalizada.")
