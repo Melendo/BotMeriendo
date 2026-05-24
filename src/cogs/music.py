@@ -144,9 +144,8 @@ class Music(commands.Cog):
                 if "spotify.com" in query:
                     await ctx.send("🔍 Analizando playlist de Spotify, esto puede tardar un poco...")
                     try:
-                        # Usamos yt-dlp para extraer solo los títulos de las canciones de la lista de Spotify
-                        # Es posible que necesite las cookies también para playlists públicas si hay bloqueo
-                        with youtube_dl.YoutubeDL({'extract_flat': True, 'quiet': True, 'cookiefile': 'cookies.txt'}) as ydl:
+                        # Usamos yt-dlp con process=False para que no intente descargar/procesar audio protegido
+                        with youtube_dl.YoutubeDL({'extract_flat': True, 'quiet': True, 'process': False}) as ydl:
                             info = await asyncio.to_thread(ydl.extract_info, query, download=False)
                         
                         entries = list(info.get('entries', []))
