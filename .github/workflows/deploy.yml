@@ -1,4 +1,4 @@
-name: Deploy to Raspberry Pi
+name: Deploy en self-hosted runner
 
 on:
   push:
@@ -7,7 +7,7 @@ on:
 
 jobs:
   deploy:
-    runs-on: self-hosted # Esto le dice que use TU Raspberry Pi, no los servidores de GitHub
+    runs-on: self-hosted 
     steps:
       - name: Check out code
         uses: actions/checkout@v4
