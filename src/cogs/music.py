@@ -54,6 +54,7 @@ class MusicControls(View):
 class Music(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        self._cleanup_started = False
 
     async def _resolve_track(self, video_url: str, title: str | None = None):
         """Resuelve una entrada de cola a un archivo de audio local estable."""
@@ -63,6 +64,11 @@ class Music(commands.Cog):
             logger.warning(f"Fallo descargando {title or video_url}: {exc}")
             raise
 
+    async def _schedule_cleanup(self):
+        if not self._cleanup_started:
+            self._cleanup_started = True
+            music_service.prune_cache_if_needed()
+
     async def play_next_song(self, ctx):
         guild_id = ctx.guild.id
 
@@ -70,33 +76,37 @@ class Music(commands.Cog):
             return
 
         if guild_id in music_queues and music_queues[guild_id]:
-            video_url, title = music_queues[guild_id].pop(0)
+            while music_queues[guild_id]:
+                video_url, title = music_queues[guild_id].pop(0)
 
-            try:
-                local_audio_path = await self._resolve_track(video_url, title)
-                source = discord.FFmpegOpusAudio(local_audio_path, **ffmpeg_options)
+                try:
+                    local_audio_path = await self._resolve_track(video_url, title)
+                    source = discord.FFmpegOpusAudio(local_audio_path, **ffmpeg_options)
 
-                def after_playing(error):
-                    if error:
-                        logger.error(f"Error en reproducción: {error}")
-                    coro = self.play_next_song(ctx)
-                    fut = asyncio.run_coroutine_threadsafe(coro, self.bot.loop)
-                    try:
-                        fut.result()
-                    except Exception:
-                        pass
+                    def after_playing(error):
+                        if error:
+                            logger.error(f"Error en reproducción: {error}")
+                        coro = self.play_next_song(ctx)
+                        fut = asyncio.run_coroutine_threadsafe(coro, self.bot.loop)
+                        try:
+                            fut.result()
+                        except Exception:
+                            pass
 
-                ctx.voice_client.play(source, after=after_playing)
-                embed = discord.Embed(title="Reproduciendo ahora", description=f"[{title}]({video_url})", color=0x00ff00)
-                view = MusicControls(ctx)
-                await ctx.send(embed=embed, view=view)
+                    ctx.voice_client.play(source, after=after_playing)
+                    embed = discord.Embed(title="Reproduciendo ahora", description=f"[{title}]({video_url})", color=0x00ff00)
+                    view = MusicControls(ctx)
+                    await ctx.send(embed=embed, view=view)
+                    return
 
-            except Exception as e:
-                logger.error(f"Error al reproducir {title}: {e}")
-                await ctx.send(f"Error al reproducir o procesar **{title}** ({e}), saltando a la siguiente...")
-                await self.play_next_song(ctx)
-        else:
+                except Exception as e:
+                    logger.warning(f"Canción descartada por fallo de reproducción: {title} - {e}")
+                    continue
+
             await ctx.send("La cola de reproducción ha terminado.")
+            return
+
+        await ctx.send("La cola de reproducción ha terminado.")
 
     @commands.command(name="join", help="El bot se une a tu canal de voz", category="Música")
     async def join(self, ctx):
@@ -122,6 +132,8 @@ class Music(commands.Cog):
 
     @commands.command(name="play", help="Reproduce música de YouTube (acepta URL o búsqueda)", category="Música")
     async def play(self, ctx, *, query):
+        await self._schedule_cleanup()
+
         if not ctx.voice_client:
             if ctx.author.voice:
                 await ctx.author.voice.channel.connect()
