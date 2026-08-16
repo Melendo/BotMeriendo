@@ -12,8 +12,9 @@ from src.utils.logger import logger
 from src.utils.music_service import music_service
 from src.utils.state import music_queues
 
+# Las opciones '-reconnect' solo son válidas para streams de red.
+# Como aquí reproducimos archivos locales descargados, no deben usarse.
 ffmpeg_options = {
-    'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
     'options': '-vn'
 }
 
