@@ -1,31 +1,21 @@
 
+import asyncio
+import os
+import tempfile
+from pathlib import Path
+
 import discord
 from discord.ext import commands
 from discord.ui import Button, View
-import yt_dlp as youtube_dl
-import asyncio
+
 from src.utils.logger import logger
+from src.utils.music_service import music_service
 from src.utils.state import music_queues
 
-# Configuración de youtube-dl y ffmpeg
-ytdl_format_options = {
-    'format': 'bestaudio/best',
-    'noplaylist': False,
-    'quiet': True,
-    'no_warnings': True,
-    'ignoreerrors': True,
-    'cookiefile': 'cookies.txt',
-    'extractor_args': {
-        'youtube': {
-            'player_client': ['default']
-        }
-    }
-}
 ffmpeg_options = {
     'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
     'options': '-vn'
 }
-ytdl = youtube_dl.YoutubeDL(ytdl_format_options)
 
 MAX_QUEUE_SIZE = 30
 
@@ -64,6 +54,14 @@ class Music(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
+    async def _resolve_track(self, video_url: str, title: str | None = None):
+        """Resuelve una entrada de cola a un archivo de audio local estable."""
+        try:
+            return await music_service.download_audio(video_url, title=title)
+        except Exception as exc:
+            logger.warning(f"Fallo descargando {title or video_url}: {exc}")
+            raise
+
     async def play_next_song(self, ctx):
         guild_id = ctx.guild.id
 
@@ -71,17 +69,12 @@ class Music(commands.Cog):
             return
 
         if guild_id in music_queues and music_queues[guild_id]:
-            # Ahora la cola contiene (video_url, title) pero el video_url aun no es el stream de audio
             video_url, title = music_queues[guild_id].pop(0)
-            
-            try:
-                # RESOLUCION JIT: Extraemos el stream de audio aqui, justo antes de reproducir
-                # Usamos asyncio.to_thread para no bloquear el loop mientras yt-dlp procesa
-                info = await asyncio.to_thread(ytdl.extract_info, video_url, download=False)
-                audio_source_url = info['url'] # Esta es la URL real del stream de audio
 
-                source = await discord.FFmpegOpusAudio.from_probe(audio_source_url, **ffmpeg_options)
-                
+            try:
+                local_audio_path = await self._resolve_track(video_url, title)
+                source = discord.FFmpegOpusAudio(local_audio_path, **ffmpeg_options)
+
                 def after_playing(error):
                     if error:
                         logger.error(f"Error en reproducción: {error}")
@@ -89,14 +82,14 @@ class Music(commands.Cog):
                     fut = asyncio.run_coroutine_threadsafe(coro, self.bot.loop)
                     try:
                         fut.result()
-                    except:
+                    except Exception:
                         pass
 
                 ctx.voice_client.play(source, after=after_playing)
                 embed = discord.Embed(title="Reproduciendo ahora", description=f"[{title}]({video_url})", color=0x00ff00)
                 view = MusicControls(ctx)
                 await ctx.send(embed=embed, view=view)
-                
+
             except Exception as e:
                 logger.error(f"Error al reproducir {title}: {e}")
                 await ctx.send(f"Error al reproducir o procesar **{title}** ({e}), saltando a la siguiente...")
@@ -142,71 +135,46 @@ class Music(commands.Cog):
                     music_queues[guild_id] = []
 
                 if query.startswith("http"):
-                    # OPTIMIZACION: Usamos extract_flat=True para obtener solo metadatos rapido
-                    # 'extract_flat': 'in_playlist' asegura que si es playlist no descargue info de cada video, solo la lista
-                    # Si es un video solo, igual extrae la info basica rapido.
-                    opts = {'extract_flat': 'in_playlist'} 
-                    # Hacemos una copia de las opciones globales y añadimos la especifica
-                    temp_opts = ytdl_format_options.copy()
-                    temp_opts.update(opts)
-                    
-                    with youtube_dl.YoutubeDL(temp_opts) as ydl_fast:
-                         info = await asyncio.to_thread(ydl_fast.extract_info, query, download=False)
-                    
-                    if 'entries' in info:
-                        entries = list(info['entries']) # Puede ser un generador
+                    info = await music_service.extract_info(query, download=False)
+
+                    if 'entries' in info and info.get('entries'):
+                        entries = [entry for entry in info['entries'] if entry]
                         added_count = 0
-                        
-                        # Añadimos las URL a la cola. 
-                        # Nota: En extract_flat, 'url' suele ser el ID o la URL completa dependiendo del extractor.
-                        # Para youtube es usualmente el ID o URL relativa. Tratemos de asegurar URL completa si es YouTube.
-                        
+
                         for entry in entries:
-                            if entry:
-                                # Construir URL completa si es necesario (para youtube)
-                                video_url = entry.get('url')
-                                video_title = entry.get('title', 'Video desconocido')
-                                
-                                # Si la URL es solo un ID (comun en extract_flat de youtube), construimos el link
-                                if video_url and len(video_url) == 11 and ' ' not in video_url and '.' not in video_url:
-                                     video_url = f"https://www.youtube.com/watch?v={video_url}"
-                                
+                            video_url = entry.get('webpage_url') or entry.get('url')
+                            video_title = entry.get('title', 'Video desconocido')
+
+                            if video_url and len(video_url) == 11 and ' ' not in video_url and '.' not in video_url:
+                                video_url = f"https://www.youtube.com/watch?v={video_url}"
+
+                            if video_url:
                                 music_queues[guild_id].append((video_url, video_title))
                                 added_count += 1
 
                         await ctx.send(f"✅ Playlist añadida: **{info.get('title', 'Lista')}** ({added_count} canciones).")
-                        
-                        # Iniciar reproduccion inmediatamente si no esta tocando
                         if not ctx.voice_client.is_playing() and not ctx.voice_client.is_paused():
                             await self.play_next_song(ctx)
                         return
-                    else:
-                        # Caso video unico (extract_flat podria devolverlo como info directa)
-                        video_url = info.get('url') # web url
-                        title = info.get('title')
-                        # Mismo check de ID
-                        if video_url and len(video_url) == 11 and ' ' not in video_url and '.' not in video_url:
-                                     video_url = f"https://www.youtube.com/watch?v={video_url}"
 
+                    video_url = info.get('webpage_url') or info.get('url')
+                    title = info.get('title')
+                    if video_url and len(video_url) == 11 and ' ' not in video_url and '.' not in video_url:
+                        video_url = f"https://www.youtube.com/watch?v={video_url}"
+
+                    if video_url and title:
                         music_queues[guild_id].append((video_url, title))
                         await ctx.send(f"➕ Añadido a la cola: **{title}**")
                 else:
-                    # Busqueda (ytsearch)
-                    # Para busqueda no usaremos extract_flat pq queremos el primer resultado ya bien parseado
-                    # O podemos usarlo pero es mas simple dejarlo como estaba para busquedas (suelen ser de 1)
-                    result = await asyncio.to_thread(ytdl.extract_info, f"ytsearch:{query}", download=False)
-                    if 'entries' in result and len(result['entries']) > 0:
+                    result = await music_service.extract_info(f"ytsearch:{query}", download=False)
+                    if result and 'entries' in result and result['entries'] and result['entries'][0]:
                         info = result['entries'][0]
-                        # Aqui info['url'] deberia ser la web url normalmente en ytsearch sin get_url=True?
-                        # ytdl por defecto devuelve resolucion completa. 
-                        # PERO para mantener consistencia con play_next_song que AHORA espera una web_url para hacer resolve...
-                        # Necesitamos guardar la WEB URL (watch?v=...), NO la audio stream url.
-                        # ytsearch devuelve la info completa, 'webpage_url' es lo que buscamos.
-                        video_url = info.get('webpage_url')
+                        video_url = info.get('webpage_url') or info.get('url')
                         title = info.get('title')
-                        
-                        music_queues[guild_id].append((video_url, title))
-                        await ctx.send(f"➕ Añadido a la cola: **{title}**")
+
+                        if video_url and title:
+                            music_queues[guild_id].append((video_url, title))
+                            await ctx.send(f"➕ Añadido a la cola: **{title}**")
                     else:
                         await ctx.send("No se encontraron resultados.")
             
