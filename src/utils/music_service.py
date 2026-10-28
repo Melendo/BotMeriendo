@@ -153,12 +153,7 @@ class YTDLService:
 
         for strategy in self._get_strategies():
             opts = {
-                **self.base_opts,
-                **strategy,
-                'outtmpl': str(self.temp_dir / f'{(title or "audio").replace("/", "_").replace("\\", "_")}-%(title)s.%(ext)s'),
-                'noplaylist': True,
-                'quiet': True,
-                'no_warnings': True,
+                **self._build_download_opts(title, strategy=strategy),
                 'postprocessors': [{
                     'key': 'FFmpegExtractAudio',
                     'preferredcodec': 'opus',
