@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `!play` con enlaces de Spotify (playlist, álbum o canción): cada canción se busca en YouTube al reproducirse. Script `scripts/spotify_token.py` para la configuración.
 - Comandos `nowplaying` (`np`), `shuffle`, `loop`, `remove <n>` y `clear`.
 - Todos los comandos funcionan también como comandos de barra (`/play`, ...).
 - Descarga adelantada de la siguiente canción: sin silencio entre canciones.
