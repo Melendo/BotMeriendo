@@ -8,7 +8,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- Ninguno (todos los desarrollos se encuentran liberados en la versión 1.0.0).
+- Comandos `nowplaying` (`np`), `shuffle`, `loop`, `remove <n>` y `clear`.
+- Todos los comandos funcionan también como comandos de barra (`/play`, ...).
+- Descarga adelantada de la siguiente canción: sin silencio entre canciones.
+- Caché de audio por id de vídeo (repetir una canción no la vuelve a bajar).
+- Tests con pytest y job de tests en GitHub Actions; el deploy solo corre si pasan.
+- Secreto opcional `YT_COOKIES` para crear `cookies.txt` en el deploy.
+
+### Changed
+- Playlists mucho más rápidas: solo se piden url y título (`extract_flat`).
+- Se piden solo los intents necesarios en vez de `Intents.all()`.
+- Versiones de dependencias fijadas (`yt-dlp` con mínimo, sin techo).
+- `bot.log` rota a los 5 MB (máximo 4 archivos).
+- La caché de audio se limpia cada hora, no solo al arrancar.
+- `cookies.txt` pasa a `cookies.example.txt`; el real se ignora en git.
+
+### Fixed
+- El cog de música no cargaba en Python 3.11 (f-string con barra invertida).
+- `docker stop` no cerraba el bot de forma limpia.
+- El límite de 30 canciones no se aplicaba.
+- `!queue` fallaba con colas largas (límite de 2000 caracteres de Discord).
+- Si una descarga fallaba se podía reproducir otra canción con el mismo título.
+- `!comandos` ponía todo en "Sin categoría".
+- La auto-desconexión miraba el canal antiguo y contaba otros bots como personas.
+- El botón de pausa podía quedar con el texto equivocado.
 
 ## [1.0.0] - 2026-06-28
 
