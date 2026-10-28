@@ -1,5 +1,6 @@
 
 import asyncio
+import time
 
 import discord
 from discord.ext import commands
@@ -17,6 +18,7 @@ ffmpeg_options = {
 }
 
 MAX_QUEUE_SIZE = 30
+CLEANUP_EVERY_SECS = 3600  # limpiar la caché de audio como mucho cada hora
 
 class MusicControls(View):
     def __init__(self, ctx):
@@ -55,7 +57,9 @@ class MusicControls(View):
 class Music(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self._cleanup_started = False
+        self._last_cleanup = 0.0
+        # guild_id -> (url, tarea que descarga esa canción por adelantado)
+        self._prefetch: dict[int, tuple[str, asyncio.Task]] = {}
 
     async def _resolve_track(self, video_url: str, title: str | None = None):
         """Resuelve una entrada de cola a un archivo de audio local estable."""
@@ -65,10 +69,50 @@ class Music(commands.Cog):
             logger.warning(f"Fallo descargando {title or video_url}: {exc}")
             raise
 
+    async def _get_track(self, guild_id: int, video_url: str, title: str | None):
+        """Usa la descarga adelantada si es esta canción; si no, descarga ahora."""
+        pre = self._prefetch.pop(guild_id, None)
+        if pre:
+            url, task = pre
+            if url == video_url:
+                try:
+                    return await task
+                except Exception:
+                    pass  # falló la previa: se reintenta abajo
+            else:
+                task.cancel()
+        return await self._resolve_track(video_url, title)
+
+    def _start_prefetch(self, guild_id: int):
+        """Empieza a bajar la siguiente canción de la cola mientras suena la actual."""
+        queue = music_queues.get(guild_id)
+        if not queue:
+            return
+        url, title = queue[0]
+        actual = self._prefetch.get(guild_id)
+        if actual and actual[0] == url:
+            return
+        self.cancel_prefetch(guild_id)
+
+        async def _bajar():
+            return await music_service.download_audio(url, title=title)
+
+        task = asyncio.create_task(_bajar())
+        # Evita el aviso "Task exception was never retrieved" si nadie la espera
+        task.add_done_callback(lambda t: t.cancelled() or t.exception())
+        self._prefetch[guild_id] = (url, task)
+
+    def cancel_prefetch(self, guild_id: int):
+        pre = self._prefetch.pop(guild_id, None)
+        if pre:
+            pre[1].cancel()
+
     async def _schedule_cleanup(self):
-        if not self._cleanup_started:
-            self._cleanup_started = True
-            music_service.prune_cache_if_needed()
+        # Limpia la caché de música como mucho una vez por hora
+        ahora = time.monotonic()
+        if not self._last_cleanup or ahora - self._last_cleanup > CLEANUP_EVERY_SECS:
+            self._last_cleanup = ahora
+            await asyncio.to_thread(music_service.prune_cache_if_needed)
 
     async def play_next_song(self, ctx):
         guild_id = ctx.guild.id
@@ -76,38 +120,37 @@ class Music(commands.Cog):
         if not ctx.voice_client:
             return
 
-        if guild_id in music_queues and music_queues[guild_id]:
-            while music_queues[guild_id]:
-                video_url, title = music_queues[guild_id].pop(0)
+        # Se escribe en el canal (no ctx.send): con comandos de barra la
+        # interacción caduca a los 15 minutos y la cola puede durar más.
+        canal = ctx.channel
 
-                try:
-                    local_audio_path = await self._resolve_track(video_url, title)
-                    source = discord.FFmpegOpusAudio(local_audio_path, **ffmpeg_options)
+        while music_queues.get(guild_id):
+            video_url, title = music_queues[guild_id].pop(0)
 
-                    def after_playing(error):
-                        if error:
-                            logger.error(f"Error en reproducción: {error}")
-                        coro = self.play_next_song(ctx)
-                        fut = asyncio.run_coroutine_threadsafe(coro, self.bot.loop)
-                        try:
-                            fut.result()
-                        except Exception:
-                            pass
+            try:
+                local_audio_path = await self._get_track(guild_id, video_url, title)
+                if not ctx.voice_client:
+                    return  # se desconectó mientras descargaba
+                source = discord.FFmpegOpusAudio(local_audio_path, **ffmpeg_options)
 
-                    ctx.voice_client.play(source, after=after_playing)
-                    embed = discord.Embed(title="Reproduciendo ahora", description=f"[{title}]({video_url})", color=0x00ff00)
-                    view = MusicControls(ctx)
-                    await ctx.send(embed=embed, view=view)
-                    return
+                def after_playing(error):
+                    if error:
+                        logger.error(f"Error en reproducción: {error}")
+                    # No esperar aquí: este callback corre en el hilo de audio
+                    asyncio.run_coroutine_threadsafe(self.play_next_song(ctx), self.bot.loop)
 
-                except Exception as e:
-                    logger.warning(f"Canción descartada por fallo de reproducción: {title} - {e}")
-                    continue
+                ctx.voice_client.play(source, after=after_playing)
+                embed = discord.Embed(title="Reproduciendo ahora", description=f"[{title}]({video_url})", color=0x00ff00)
+                view = MusicControls(ctx)
+                await canal.send(embed=embed, view=view)
+                self._start_prefetch(guild_id)
+                return
 
-            await ctx.send("La cola de reproducción ha terminado.")
-            return
+            except Exception as e:
+                logger.warning(f"Canción descartada por fallo de reproducción: {title} - {e}")
+                continue
 
-        await ctx.send("La cola de reproducción ha terminado.")
+        await canal.send("La cola de reproducción ha terminado.")
 
     @commands.command(name="join", help="El bot se une a tu canal de voz", category="Música")
     async def join(self, ctx):
@@ -125,9 +168,10 @@ class Music(commands.Cog):
     @commands.command(name="leave", help="El bot sale del canal de voz", category="Música")
     async def leave(self, ctx):
         if ctx.voice_client:
-            await ctx.voice_client.disconnect()
+            self.cancel_prefetch(ctx.guild.id)
             if ctx.guild.id in music_queues:
                 music_queues[ctx.guild.id] = []
+            await ctx.voice_client.disconnect()
         else:
             await ctx.send("No estoy en ningún canal de voz.")
 
@@ -184,9 +228,10 @@ class Music(commands.Cog):
     @commands.command(name="stop", help="Detiene la música y limpia la cola", category="Música")
     async def stop(self, ctx):
         if ctx.voice_client:
-            ctx.voice_client.stop()
+            self.cancel_prefetch(ctx.guild.id)
             if ctx.guild.id in music_queues:
                 music_queues[ctx.guild.id] = []
+            ctx.voice_client.stop()
             await ctx.send("⏹️ Música detenida y cola vacía.")
         else:
             await ctx.send("No hay nada reproduciéndose.")

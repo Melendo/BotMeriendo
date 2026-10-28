@@ -1,9 +1,13 @@
 import asyncio
 import os
+import re
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import yt_dlp
+
+AUDIO_EXTS = ('.opus', '.m4a', '.webm', '.mp3', '.ogg')
+_YT_ID_RE = re.compile(r'(?:[?&]v=|youtu\.be/|/shorts/|/embed/)([\w-]{11})')
 
 
 class YTDLService:
@@ -94,37 +98,52 @@ class YTDLService:
 
         return deleted
 
-    def _build_download_opts(self, title: str | None = None, *, output_ext: str | None = None, strategy: dict | None = None) -> dict:
-        safe_title = (title or 'audio').replace('/', '_').replace('\\', '_')
-        ext = output_ext or '%(ext)s'
+    def _build_download_opts(self, title: str | None = None, *, strategy: dict | None = None) -> dict:
+        # El archivo se llama por el id del vídeo: único y fácil de reencontrar (caché).
         opts = {
             **self.base_opts,
             **(strategy or {}),
-            'outtmpl': str(self.temp_dir / f'{safe_title}-%(title)s.{ext}'),
+            'outtmpl': str(self.temp_dir / '%(id)s.%(ext)s'),
             'quiet': True,
             'no_warnings': True,
             'noplaylist': True,
         }
         return opts
 
-    def _find_downloaded_audio(self, title: str | None = None, video_id: str | None = None):
-        safe_title = (title or 'audio').replace('/', '_').replace('\\', '_')
-        expected_names = []
-        if video_id:
-            expected_names.append(f'{safe_title}-{video_id}')
-        expected_names.append(safe_title)
+    @staticmethod
+    def video_id(url: str | None) -> str | None:
+        """Id de 11 caracteres de un enlace de YouTube, o None."""
+        if not url:
+            return None
+        m = _YT_ID_RE.search(url)
+        return m.group(1) if m else None
 
-        for name_prefix in expected_names:
-            matches = sorted(self.temp_dir.glob(f'{name_prefix}*.opus')) + sorted(self.temp_dir.glob(f'{name_prefix}*.mp3')) + sorted(self.temp_dir.glob(f'{name_prefix}*.m4a')) + sorted(self.temp_dir.glob(f'{name_prefix}*.webm')) + sorted(self.temp_dir.glob(f'{name_prefix}*.ogg'))
-            if matches:
-                return str(matches[0])
+    def cached_path(self, url: str | None) -> str | None:
+        """Ruta del audio ya descargado para ese enlace, si existe."""
+        vid = self.video_id(url)
+        if not vid:
+            return None
+        for ext in AUDIO_EXTS:
+            p = self.temp_dir / f'{vid}{ext}'
+            if p.is_file() and p.stat().st_size > 0:
+                p.touch()  # recién usado: que la limpieza no lo borre
+                return str(p)
+        return None
 
-        for candidate in sorted(self.temp_dir.iterdir()):
-            if candidate.is_file() and candidate.suffix.lower() in {'.opus', '.mp3', '.m4a', '.webm', '.ogg'}:
-                name_ok = title is None or candidate.name.startswith(safe_title)
-                if name_ok:
-                    return str(candidate)
-
+    def _find_downloaded_audio(self, info) -> str | None:
+        """Ruta final del audio según lo que devuelve yt-dlp."""
+        if not isinstance(info, dict):
+            return None
+        for d in info.get('requested_downloads') or []:
+            fp = d.get('filepath')
+            if fp and os.path.isfile(fp):
+                return fp
+        vid = info.get('id')
+        if vid:
+            for ext in AUDIO_EXTS:
+                p = self.temp_dir / f'{vid}{ext}'
+                if p.is_file():
+                    return str(p)
         return None
 
     async def extract_info(self, query: str, *, download: bool = False, flat: bool = True):
@@ -156,6 +175,10 @@ class YTDLService:
 
     async def download_audio(self, video_url: str, title: str | None = None) -> str:
         """Descarga el audio a un archivo local y devuelve la ruta local segura."""
+        cached = self.cached_path(video_url)
+        if cached:
+            return cached
+
         last_error = None
 
         for strategy in self._get_strategies():
@@ -167,12 +190,14 @@ class YTDLService:
                     'preferredquality': '0',
                 }],
                 'format': 'bestaudio/best',
+                # Un solo vídeo: mejor que falle con el error real (p. ej. "Sign in
+                # to confirm you're not a bot") que devolver None en silencio.
+                'ignoreerrors': False,
             }
             try:
                 with yt_dlp.YoutubeDL(opts) as ydl:
                     info = await asyncio.to_thread(ydl.extract_info, video_url, download=True)
-                video_id = info.get('id') if isinstance(info, dict) else None
-                found = self._find_downloaded_audio(title=title, video_id=video_id)
+                found = self._find_downloaded_audio(info)
                 if found:
                     return found
             except Exception as exc:

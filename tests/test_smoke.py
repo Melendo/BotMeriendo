@@ -22,9 +22,9 @@ def test_main_importa():
     import src.main  # noqa: F401
 
 
-def test_opts_descarga_limpia_titulo():
+def test_opts_descarga_por_id():
     opts = music_service._build_download_opts("a/b\\c", strategy={"x": 1})
-    assert "a_b_c-" in opts["outtmpl"]
+    assert opts["outtmpl"].endswith("%(id)s.%(ext)s")
     assert opts["noplaylist"] is True
     assert opts["x"] == 1
 
