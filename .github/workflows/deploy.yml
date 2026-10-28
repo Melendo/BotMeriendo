@@ -41,6 +41,19 @@ jobs:
         run: |
           echo "${{ secrets.ENV_FILE }}" > .env
 
+      - name: Create cookies.txt (opcional)
+        # Si existe el secreto YT_COOKIES se escribe cookies.txt;
+        # si no, el bot funciona sin cookies como antes.
+        env:
+          YT_COOKIES: ${{ secrets.YT_COOKIES }}
+        run: |
+          if [ -n "$YT_COOKIES" ]; then
+            printf '%s\n' "$YT_COOKIES" > cookies.txt
+            echo "cookies.txt creado desde el secreto"
+          else
+            echo "Sin secreto YT_COOKIES: se despliega sin cookies"
+          fi
+
       - name: Build and Deploy
         run: |
           # Detiene los contenedores, reconstruye la imagen y levanta en segundo plano
