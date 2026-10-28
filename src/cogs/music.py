@@ -7,6 +7,7 @@ from discord.ui import Button, View
 
 from src.utils.logger import logger
 from src.utils.music_service import music_service
+from src.utils.queue_utils import trocear
 from src.utils.state import music_queues
 
 # Las opciones '-reconnect' solo son válidas para streams de red.
@@ -244,8 +245,9 @@ class Music(commands.Cog):
     async def queue(self, ctx):
         guild_id = ctx.guild.id
         if guild_id in music_queues and music_queues[guild_id]:
-            cola = "\n".join([f"{i+1}. {title}" for i, (_, title) in enumerate(music_queues[guild_id])])
-            await ctx.send(f"📜 Cola de reproducción:\n{cola}")
+            lineas = [f"{i+1}. {title}" for i, (_, title) in enumerate(music_queues[guild_id])]
+            for mensaje in trocear(lineas, cabecera="📜 Cola de reproducción:"):
+                await ctx.send(mensaje)
         else:
             await ctx.send("La cola está vacía.")
 
