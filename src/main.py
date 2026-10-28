@@ -11,8 +11,13 @@ validate_config()
 
 # Configuración del bot
 descripcion = "Bot todopoderoso del linaje Meriendo"
-intents = discord.Intents.all()
+# Solo los permisos (intents) que el bot usa de verdad:
+# - default(): servidores, canales de voz, mensajes...
+# - message_content: leer los comandos con prefijo (!play)
+# - members: evento on_member_join (bienvenida por DM)
+intents = discord.Intents.default()
 intents.message_content = True
+intents.members = True
 
 bot = commands.Bot(command_prefix=PREFIX, intents=intents, description=descripcion)
 

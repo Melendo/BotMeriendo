@@ -37,3 +37,10 @@ def test_solo_bots():
     assert _solo_bots(_canal(True))
     assert _solo_bots(_canal(True, True))
     assert not _solo_bots(_canal(True, False))
+
+
+def test_intents_minimos():
+    from src.main import bot as main_bot
+    it = main_bot.intents
+    assert it.message_content and it.members and it.voice_states and it.guilds
+    assert not it.presences  # no lo usa: no se pide
