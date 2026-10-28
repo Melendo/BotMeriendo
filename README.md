@@ -105,7 +105,7 @@ Todos funcionan con el prefijo (`!play`) y como comando de barra (`/play`). `!co
 
 | Comando | Qué hace |
 | :--- | :--- |
-| `play <url o búsqueda>` | Añade una canción o una playlist de YouTube (máx. 30 en cola) |
+| `play <url o búsqueda>` | Añade una canción o una playlist de YouTube, o un enlace de Spotify (máx. 30 en cola) |
 | `pause` / `resume` / `skip` / `stop` | Controlan la reproducción |
 | `queue` | Muestra la cola |
 | `nowplaying` (`np`) | Muestra la canción que suena |
@@ -117,6 +117,27 @@ Todos funcionan con el prefijo (`!play`) y como comando de barra (`/play`). `!co
 | `ping` / `hola` / `comandos` | Utilidades |
 
 Los comandos de barra se registran al arrancar. La primera vez Discord puede tardar un rato en mostrarlos.
+
+### Spotify (opcional)
+`!play` acepta enlaces de Spotify de **playlist, álbum o canción**. Spotify no deja reproducir su audio, así que el bot lee "artista - título" y busca cada canción en YouTube justo antes de que suene.
+
+**Límite de Spotify (desde febrero de 2026):** el bot solo puede leer playlists **creadas por la cuenta de Spotify del bot o colaborativas en las que esté**. Las de otras personas y las de Spotify (p. ej. "Top 50") dan error. Los álbumes y canciones sueltas funcionan siempre. La cuenta dueña de la app necesita **Spotify Premium**.
+
+Configuración, una sola vez:
+1. Crea una app en el [Spotify Developer Dashboard](https://developer.spotify.com/dashboard). Usa "Web API" y añade el Redirect URI `http://127.0.0.1:8888/callback`.
+2. En tu ordenador, desde la raíz del repo:
+   ```bash
+   python scripts/spotify_token.py
+   ```
+   Pide el Client ID y el Client Secret, abre Spotify en el navegador y, al aceptar, imprime tres líneas.
+3. Pega esas líneas en el `.env` (y en el secreto `ENV_FILE` de GitHub si usas el deploy):
+   ```env
+   SPOTIFY_CLIENT_ID=...
+   SPOTIFY_CLIENT_SECRET=...
+   SPOTIFY_REFRESH_TOKEN=...
+   ```
+
+Para que el bot lea una playlist de un amigo, hazla colaborativa e invita a la cuenta del bot, o cópiala en esa cuenta.
 
 ### Cookies de YouTube
 Si YouTube responde *"Sign in to confirm you're not a bot"*, el bot necesita cookies:

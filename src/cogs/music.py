@@ -6,10 +6,14 @@ import discord
 from discord.ext import commands
 from discord.ui import Button, View
 
+from src.config import SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET, SPOTIFY_REFRESH_TOKEN
 from src.utils.logger import logger
 from src.utils.music_service import music_service
 from src.utils.queue_utils import pistas_de_info, trocear
+from src.utils.spotify import SpotifyClient, SpotifyError, busqueda_youtube, es_spotify, parse_spotify_url
 from src.utils.state import loop_enabled, music_queues, now_playing, reset_guild, skip_once
+
+spotify = SpotifyClient(SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET, SPOTIFY_REFRESH_TOKEN)
 
 # Las opciones '-reconnect' solo son válidas para streams de red.
 # Como aquí reproducimos archivos locales descargados, no deben usarse.
@@ -68,15 +72,24 @@ class Music(commands.Cog):
         # guild_id -> (url, tarea que descarga esa canción por adelantado)
         self._prefetch: dict[int, tuple[str, asyncio.Task]] = {}
 
-    async def _resolve_track(self, video_url: str, title: str | None = None):
-        """Resuelve una entrada de cola a un archivo de audio local estable."""
+    async def _resolve_track(self, video_url: str, title: str | None = None) -> tuple[str, str]:
+        """Entrada de la cola -> (enlace real del vídeo, archivo de audio local).
+
+        Las canciones de Spotify entran en la cola como búsqueda ("ytsearch1:...")
+        y se convierten aquí en un vídeo concreto, justo antes de bajarlo.
+        """
         try:
-            return await music_service.download_audio(video_url, title=title)
+            if video_url.startswith("ytsearch"):
+                pistas = pistas_de_info(await music_service.extract_info(video_url))
+                if not pistas:
+                    raise LookupError(f"Sin resultados en YouTube para: {title}")
+                video_url = pistas[0][0]
+            return video_url, await music_service.download_audio(video_url, title=title)
         except Exception as exc:
             logger.warning(f"Fallo descargando {title or video_url}: {exc}")
             raise
 
-    async def _get_track(self, guild_id: int, video_url: str, title: str | None):
+    async def _get_track(self, guild_id: int, video_url: str, title: str | None) -> tuple[str, str]:
         """Usa la descarga adelantada si es esta canción; si no, descarga ahora."""
         pre = self._prefetch.pop(guild_id, None)
         if pre:
@@ -102,7 +115,7 @@ class Music(commands.Cog):
         self.cancel_prefetch(guild_id)
 
         async def _bajar():
-            return await music_service.download_audio(url, title=title)
+            return await self._resolve_track(url, title)
 
         task = asyncio.create_task(_bajar())
         # Evita el aviso "Task exception was never retrieved" si nadie la espera
@@ -147,7 +160,7 @@ class Music(commands.Cog):
             video_url, title = music_queues[guild_id].pop(0)
 
             try:
-                local_audio_path = await self._get_track(guild_id, video_url, title)
+                video_url, local_audio_path = await self._get_track(guild_id, video_url, title)
                 if not ctx.voice_client:
                     return  # se desconectó mientras descargaba
                 source = discord.FFmpegOpusAudio(local_audio_path, **ffmpeg_options)
@@ -202,7 +215,39 @@ class Music(commands.Cog):
         else:
             await ctx.send("No estoy en ningún canal de voz.")
 
-    @commands.hybrid_command(name="play", help="Reproduce música de YouTube (acepta URL o búsqueda)", extras={"category": "Música"})
+    async def _play_spotify(self, ctx, enlace: str):
+        """Encola las canciones de un enlace de Spotify como búsquedas de YouTube."""
+        guild_id = ctx.guild.id
+        tipo, sid = parse_spotify_url(enlace)
+        hueco = MAX_QUEUE_SIZE - len(music_queues[guild_id])
+        try:
+            # Se pide una de más para saber si la cola se queda corta
+            nombre, canciones = await spotify.canciones(tipo, sid, hueco + 1)
+        except SpotifyError as e:
+            await ctx.send(f"❌ {e}")
+            return
+
+        pistas = [p for p in (busqueda_youtube(c) for c in canciones) if p]
+        if not pistas:
+            await ctx.send("No encontré canciones en ese enlace de Spotify.")
+            return
+
+        añadidas = pistas[:hueco]
+        music_queues[guild_id].extend(añadidas)
+
+        if tipo == "track":
+            await ctx.send(f"➕ Añadido a la cola: **{añadidas[0][1]}** (de Spotify)")
+        else:
+            await ctx.send(f"✅ Añadidas de Spotify: **{nombre or 'Lista'}** ({len(añadidas)} canciones).")
+        if len(pistas) > len(añadidas):
+            await ctx.send(f"⚠️ Cola llena: solo caben {MAX_QUEUE_SIZE} canciones, el resto no se añadió.")
+
+        if not ctx.voice_client.is_playing() and not ctx.voice_client.is_paused():
+            await self.play_next_song(ctx)
+        elif guild_id not in loop_enabled:
+            self._start_prefetch(guild_id)
+
+    @commands.hybrid_command(name="play", help="Reproduce de YouTube o Spotify (URL o búsqueda)", extras={"category": "Música"})
     async def play(self, ctx, *, query: str):
         await self._schedule_cleanup()
 
@@ -221,6 +266,10 @@ class Music(commands.Cog):
 
                 if len(music_queues[guild_id]) >= MAX_QUEUE_SIZE:
                     await ctx.send(f"⚠️ La cola está llena (máximo {MAX_QUEUE_SIZE} canciones).")
+                    return
+
+                if es_spotify(query):
+                    await self._play_spotify(ctx, query)
                     return
 
                 es_url = query.startswith("http")
