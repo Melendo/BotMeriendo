@@ -127,8 +127,12 @@ class YTDLService:
 
         return None
 
-    async def extract_info(self, query: str, *, download: bool = False):
-        """Extrae información sin depender de un stream directo de GoogleVideo."""
+    async def extract_info(self, query: str, *, download: bool = False, flat: bool = True):
+        """Extrae información sin depender de un stream directo de GoogleVideo.
+
+        flat=True: en playlists y búsquedas solo pide url y título de cada vídeo
+        (muy rápido). El audio se resuelve después, al reproducir.
+        """
         last_error = None
         for strategy in self._get_strategies():
             opts = {
@@ -137,10 +141,13 @@ class YTDLService:
                 'noplaylist': False,
                 'quiet': True,
                 'no_warnings': True,
-                'extract_flat': False,
+                'extract_flat': 'in_playlist' if flat else False,
             }
             try:
-                return await asyncio.to_thread(yt_dlp.YoutubeDL(opts).extract_info, query, download=download)
+                info = await asyncio.to_thread(yt_dlp.YoutubeDL(opts).extract_info, query, download=download)
+                if info:
+                    return info
+                # Con ignoreerrors yt-dlp devuelve None en vez de fallar: probar otra estrategia
             except Exception as exc:
                 last_error = exc
         if last_error:

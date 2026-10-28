@@ -7,7 +7,7 @@ from discord.ui import Button, View
 
 from src.utils.logger import logger
 from src.utils.music_service import music_service
-from src.utils.queue_utils import trocear
+from src.utils.queue_utils import pistas_de_info, trocear
 from src.utils.state import music_queues
 
 # Las opciones '-reconnect' solo son válidas para streams de red.
@@ -152,53 +152,27 @@ class Music(commands.Cog):
                     await ctx.send(f"⚠️ La cola está llena (máximo {MAX_QUEUE_SIZE} canciones).")
                     return
 
-                if query.startswith("http"):
-                    info = await music_service.extract_info(query, download=False)
+                es_url = query.startswith("http")
+                info = await music_service.extract_info(query if es_url else f"ytsearch1:{query}")
+                pistas = pistas_de_info(info)
+                if not es_url:
+                    pistas = pistas[:1]  # búsqueda: solo el primer resultado
 
-                    if 'entries' in info and info.get('entries'):
-                        entries = [entry for entry in info['entries'] if entry]
-                        added_count = 0
+                if not pistas:
+                    await ctx.send("No se encontraron resultados.")
+                    return
 
-                        for entry in entries:
-                            if len(music_queues[guild_id]) >= MAX_QUEUE_SIZE:
-                                break
-                            video_url = entry.get('webpage_url') or entry.get('url')
-                            video_title = entry.get('title', 'Video desconocido')
+                hueco = MAX_QUEUE_SIZE - len(music_queues[guild_id])
+                añadidas = pistas[:hueco]
+                music_queues[guild_id].extend(añadidas)
 
-                            if video_url and len(video_url) == 11 and ' ' not in video_url and '.' not in video_url:
-                                video_url = f"https://www.youtube.com/watch?v={video_url}"
-
-                            if video_url:
-                                music_queues[guild_id].append((video_url, video_title))
-                                added_count += 1
-
-                        await ctx.send(f"✅ Playlist añadida: **{info.get('title', 'Lista')}** ({added_count} canciones).")
-                        if added_count < len(entries):
-                            await ctx.send(f"⚠️ Cola llena: solo caben {MAX_QUEUE_SIZE} canciones, el resto no se añadió.")
-                        if not ctx.voice_client.is_playing() and not ctx.voice_client.is_paused():
-                            await self.play_next_song(ctx)
-                        return
-
-                    video_url = info.get('webpage_url') or info.get('url')
-                    title = info.get('title')
-                    if video_url and len(video_url) == 11 and ' ' not in video_url and '.' not in video_url:
-                        video_url = f"https://www.youtube.com/watch?v={video_url}"
-
-                    if video_url and title:
-                        music_queues[guild_id].append((video_url, title))
-                        await ctx.send(f"➕ Añadido a la cola: **{title}**")
+                es_playlist = es_url and info.get("entries") is not None
+                if es_playlist:
+                    await ctx.send(f"✅ Playlist añadida: **{info.get('title', 'Lista')}** ({len(añadidas)} canciones).")
                 else:
-                    result = await music_service.extract_info(f"ytsearch:{query}", download=False)
-                    if result and 'entries' in result and result['entries'] and result['entries'][0]:
-                        info = result['entries'][0]
-                        video_url = info.get('webpage_url') or info.get('url')
-                        title = info.get('title')
-
-                        if video_url and title:
-                            music_queues[guild_id].append((video_url, title))
-                            await ctx.send(f"➕ Añadido a la cola: **{title}**")
-                    else:
-                        await ctx.send("No se encontraron resultados.")
+                    await ctx.send(f"➕ Añadido a la cola: **{añadidas[0][1]}**")
+                if len(añadidas) < len(pistas):
+                    await ctx.send(f"⚠️ Cola llena: solo caben {MAX_QUEUE_SIZE} canciones, el resto no se añadió.")
 
                 if not ctx.voice_client.is_playing() and not ctx.voice_client.is_paused():
                     await self.play_next_song(ctx)
