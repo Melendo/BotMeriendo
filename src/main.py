@@ -2,7 +2,7 @@
 import discord
 from discord.ext import commands
 import asyncio
-import os
+import signal
 from src.config import TOKEN, PREFIX, validate_config
 from src.utils.logger import logger
 
@@ -31,24 +31,22 @@ async def load_extensions():
             logger.error(f"Error cargando extensión {ext}: {e}")
 
 async def main():
+    # Manejo limpio de cierre con señal de sistema.
+    # Se registra en el loop que de verdad corre (el de asyncio.run).
+    loop = asyncio.get_running_loop()
+
+    def shutdown():
+        logger.info("Cierre del bot iniciado...")
+        loop.create_task(bot.close())
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, shutdown)
+
     async with bot:
         await load_extensions()
         await bot.start(TOKEN)
 
 if __name__ == "__main__":
-    # Manejo limpio de cierre con señal de sistema
-    import signal
-    loop = asyncio.get_event_loop()
-    
-    def shutdown():
-        tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
-        for task in tasks:
-            task.cancel()
-        logger.info("Cierre del bot iniciado...")
-
-    loop.add_signal_handler(signal.SIGTERM, shutdown)
-    loop.add_signal_handler(signal.SIGINT, shutdown)
-
     try:
         asyncio.run(main())
     except (asyncio.CancelledError, KeyboardInterrupt):

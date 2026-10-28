@@ -3,7 +3,12 @@ import discord
 from discord.ext import commands
 import asyncio
 from src.utils.logger import logger
-from src.cogs.music import music_queues  # Importamos para limpiar colas
+from src.utils.state import music_queues  # Importamos para limpiar colas
+
+
+def _solo_bots(channel) -> bool:
+    """True si en el canal no queda ninguna persona (solo bots o nadie)."""
+    return all(m.bot for m in channel.members)
 
 class Events(commands.Cog):
     def __init__(self, bot):
@@ -46,13 +51,13 @@ class Events(commands.Cog):
             
             # Si el bot está en el canal del que alguien salió
             if voice_client and voice_client.channel == before.channel:
-                 # Si solo queda 1 miembro (el bot)
-                if len(before.channel.members) == 1:
+                # Si no queda ninguna persona (solo el bot)
+                if _solo_bots(voice_client.channel):
                     logger.info(f"Bot solo en {before.channel.name}, iniciando timer de desconexión.")
                     await asyncio.sleep(60)
-                    
-                    # Verificar de nuevo tras el tiempo
-                    if len(before.channel.members) == 1 and voice_client.is_connected():
+
+                    # Verificar de nuevo tras el tiempo, con el estado actual del canal
+                    if voice_client.is_connected() and _solo_bots(voice_client.channel):
                         await voice_client.disconnect()
                         if before.channel.guild.id in music_queues:
                             music_queues[before.channel.guild.id] = []

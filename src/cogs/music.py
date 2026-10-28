@@ -1,8 +1,5 @@
 
 import asyncio
-import os
-import tempfile
-from pathlib import Path
 
 import discord
 from discord.ext import commands
@@ -31,16 +28,19 @@ class MusicControls(View):
             await interaction.response.send_message("No estoy conectado.", ephemeral=True)
             return
 
-        if self.ctx.voice_client.is_playing():
-            self.ctx.voice_client.pause()
+        vc = self.ctx.voice_client
+        if vc.is_playing():
+            vc.pause()
             button.label = "▶️ Reanudar"
             button.style = discord.ButtonStyle.green
-            await interaction.response.edit_message(view=self)
-        else:
-            self.ctx.voice_client.resume()
+        elif vc.is_paused():
+            vc.resume()
             button.label = "⏸️ Pausa"
             button.style = discord.ButtonStyle.blurple
-            await interaction.response.edit_message(view=self)
+        else:
+            await interaction.response.send_message("No hay nada sonando.", ephemeral=True)
+            return
+        await interaction.response.edit_message(view=self)
 
     @discord.ui.button(label="⏭️ Skip", style=discord.ButtonStyle.red)
     async def skip(self, interaction: discord.Interaction, button: Button):
@@ -147,6 +147,10 @@ class Music(commands.Cog):
                 if guild_id not in music_queues:
                     music_queues[guild_id] = []
 
+                if len(music_queues[guild_id]) >= MAX_QUEUE_SIZE:
+                    await ctx.send(f"⚠️ La cola está llena (máximo {MAX_QUEUE_SIZE} canciones).")
+                    return
+
                 if query.startswith("http"):
                     info = await music_service.extract_info(query, download=False)
 
@@ -155,6 +159,8 @@ class Music(commands.Cog):
                         added_count = 0
 
                         for entry in entries:
+                            if len(music_queues[guild_id]) >= MAX_QUEUE_SIZE:
+                                break
                             video_url = entry.get('webpage_url') or entry.get('url')
                             video_title = entry.get('title', 'Video desconocido')
 
@@ -166,6 +172,8 @@ class Music(commands.Cog):
                                 added_count += 1
 
                         await ctx.send(f"✅ Playlist añadida: **{info.get('title', 'Lista')}** ({added_count} canciones).")
+                        if added_count < len(entries):
+                            await ctx.send(f"⚠️ Cola llena: solo caben {MAX_QUEUE_SIZE} canciones, el resto no se añadió.")
                         if not ctx.voice_client.is_playing() and not ctx.voice_client.is_paused():
                             await self.play_next_song(ctx)
                         return
@@ -190,9 +198,6 @@ class Music(commands.Cog):
                             await ctx.send(f"➕ Añadido a la cola: **{title}**")
                     else:
                         await ctx.send("No se encontraron resultados.")
-            
-                if len(music_queues[guild_id]) >= MAX_QUEUE_SIZE:
-                    await ctx.send(f"⚠️ La cola está llena, algunas canciones podrían no haberse añadido.")
 
                 if not ctx.voice_client.is_playing() and not ctx.voice_client.is_paused():
                     await self.play_next_song(ctx)

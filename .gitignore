@@ -568,3 +568,6 @@ FodyWeavers.xsd
 
 ### VisualStudio Patch ###
 # Additional files built by Visual Studio
+
+# Cookies reales de YouTube (no subir nunca)
+cookies.txt
