@@ -73,7 +73,7 @@ class FakeCtx:
         self.voice_client = FakeVoice()
         self.channel = FakeChannel()
         self.sent = self.channel.sent
-        self.author = SimpleNamespace(voice=None, mention="@yo")
+        self.author = SimpleNamespace(voice=None, mention="@yo", name="yo")
 
     async def send(self, content=None, **kwargs):
         self.sent.append(content if content is not None else kwargs)
