@@ -1,28 +1,10 @@
 import asyncio
 
-import pytest
-
 from src.utils.music_service import YTDLService
 from src.utils.state import music_queues
 
 A = ("https://www.youtube.com/watch?v=aaaaaaaaaaa", "A")
 B = ("https://www.youtube.com/watch?v=bbbbbbbbbbb", "B")
-
-
-@pytest.fixture
-def fake_audio(monkeypatch):
-    """Sin ffmpeg ni red: descargas y audio falsos que cuentan llamadas."""
-    from src.cogs import music as mod
-    calls = []
-
-    async def fake_download(url, title=None):
-        calls.append(url)
-        await asyncio.sleep(0)
-        return f"/fake/{url[-11:]}.opus"
-
-    monkeypatch.setattr(mod.music_service, "download_audio", fake_download)
-    monkeypatch.setattr(mod.discord, "FFmpegOpusAudio", lambda path, **kw: path)
-    return calls
 
 
 async def test_prefetch_baja_la_siguiente_una_vez(music, ctx, fake_audio):

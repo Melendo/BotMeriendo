@@ -89,11 +89,31 @@ class FakeCtx:
 
 @pytest.fixture
 def ctx():
-    from src.utils.state import music_queues
-    music_queues.clear()
+    from src.utils import state
+    state.music_queues.clear()
+    state.now_playing.clear()
+    state.loop_enabled.clear()
+    state.skip_once.clear()
     return FakeCtx()
 
 
 @pytest.fixture
 def music(bot):
     return bot.get_cog("Music")
+
+
+@pytest.fixture
+def fake_audio(monkeypatch):
+    """Sin ffmpeg ni red: descargas y audio falsos que cuentan llamadas."""
+    import asyncio
+    from src.cogs import music as mod
+    calls = []
+
+    async def fake_download(url, title=None):
+        calls.append(url)
+        await asyncio.sleep(0)
+        return f"/fake/{url[-11:]}.opus"
+
+    monkeypatch.setattr(mod.music_service, "download_audio", fake_download)
+    monkeypatch.setattr(mod.discord, "FFmpegOpusAudio", lambda path, **kw: path)
+    return calls

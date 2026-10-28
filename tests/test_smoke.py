@@ -6,6 +6,7 @@ from src.utils.music_service import music_service
 BASE_COMMANDS = {
     "comandos", "hola", "join", "leave", "pause", "ping",
     "play", "queue", "resume", "skip", "stop",
+    "nowplaying", "shuffle", "loop", "remove", "clear",
 }
 
 

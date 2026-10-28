@@ -1,5 +1,5 @@
-
 import asyncio
+import random
 import time
 
 import discord
@@ -9,7 +9,7 @@ from discord.ui import Button, View
 from src.utils.logger import logger
 from src.utils.music_service import music_service
 from src.utils.queue_utils import pistas_de_info, trocear
-from src.utils.state import music_queues
+from src.utils.state import loop_enabled, music_queues, now_playing, reset_guild, skip_once
 
 # Las opciones '-reconnect' solo son válidas para streams de red.
 # Como aquí reproducimos archivos locales descargados, no deben usarse.
@@ -19,6 +19,13 @@ ffmpeg_options = {
 
 MAX_QUEUE_SIZE = 30
 CLEANUP_EVERY_SECS = 3600  # limpiar la caché de audio como mucho cada hora
+
+
+def saltar(voice_client, guild_id):
+    """Corta la canción actual; si hay bucle, esa vez no se repite."""
+    skip_once.add(guild_id)
+    voice_client.stop()
+
 
 class MusicControls(View):
     def __init__(self, ctx):
@@ -48,7 +55,7 @@ class MusicControls(View):
     @discord.ui.button(label="⏭️ Skip", style=discord.ButtonStyle.red)
     async def skip(self, interaction: discord.Interaction, button: Button):
         if self.ctx.voice_client:
-            self.ctx.voice_client.stop()
+            saltar(self.ctx.voice_client, self.ctx.guild.id)
             await interaction.response.send_message("Saltando canción...", ephemeral=True)
         else:
             await interaction.response.send_message("No estoy conectado.", ephemeral=True)
@@ -107,6 +114,10 @@ class Music(commands.Cog):
         if pre:
             pre[1].cancel()
 
+    def _reset(self, guild_id: int):
+        self.cancel_prefetch(guild_id)
+        reset_guild(guild_id)
+
     async def _schedule_cleanup(self):
         # Limpia la caché de música como mucho una vez por hora
         ahora = time.monotonic()
@@ -124,6 +135,14 @@ class Music(commands.Cog):
         # interacción caduca a los 15 minutos y la cola puede durar más.
         canal = ctx.channel
 
+        # Bucle: vuelve a poner la canción que acaba de sonar, salvo si se saltó
+        saltada = guild_id in skip_once
+        skip_once.discard(guild_id)
+        actual = now_playing.get(guild_id)
+        if actual and guild_id in loop_enabled and not saltada:
+            music_queues.setdefault(guild_id, []).insert(0, actual)
+        now_playing.pop(guild_id, None)
+
         while music_queues.get(guild_id):
             video_url, title = music_queues[guild_id].pop(0)
 
@@ -139,14 +158,19 @@ class Music(commands.Cog):
                     # No esperar aquí: este callback corre en el hilo de audio
                     asyncio.run_coroutine_threadsafe(self.play_next_song(ctx), self.bot.loop)
 
+                now_playing[guild_id] = (video_url, title)
                 ctx.voice_client.play(source, after=after_playing)
                 embed = discord.Embed(title="Reproduciendo ahora", description=f"[{title}]({video_url})", color=0x00ff00)
+                if guild_id in loop_enabled:
+                    embed.set_footer(text="🔁 Bucle activado")
                 view = MusicControls(ctx)
                 await canal.send(embed=embed, view=view)
-                self._start_prefetch(guild_id)
+                if guild_id not in loop_enabled:
+                    self._start_prefetch(guild_id)
                 return
 
             except Exception as e:
+                now_playing.pop(guild_id, None)
                 logger.warning(f"Canción descartada por fallo de reproducción: {title} - {e}")
                 continue
 
@@ -157,7 +181,7 @@ class Music(commands.Cog):
         if not ctx.author.voice:
             await ctx.send("¡Debes estar en un canal de voz!")
             return
-        
+
         channel = ctx.author.voice.channel
         if not channel.permissions_for(ctx.guild.me).connect:
             await ctx.send("No tengo permisos para conectarme a ese canal.")
@@ -168,9 +192,7 @@ class Music(commands.Cog):
     @commands.command(name="leave", help="El bot sale del canal de voz", category="Música")
     async def leave(self, ctx):
         if ctx.voice_client:
-            self.cancel_prefetch(ctx.guild.id)
-            if ctx.guild.id in music_queues:
-                music_queues[ctx.guild.id] = []
+            self._reset(ctx.guild.id)
             await ctx.voice_client.disconnect()
         else:
             await ctx.send("No estoy en ningún canal de voz.")
@@ -220,7 +242,9 @@ class Music(commands.Cog):
 
                 if not ctx.voice_client.is_playing() and not ctx.voice_client.is_paused():
                     await self.play_next_song(ctx)
-            
+                elif guild_id not in loop_enabled:
+                    self._start_prefetch(guild_id)
+
             except Exception as e:
                 await ctx.send("Ocurrió un error al procesar la solicitud.")
                 logger.error(f"Error al buscar música: {e}")
@@ -228,9 +252,7 @@ class Music(commands.Cog):
     @commands.command(name="stop", help="Detiene la música y limpia la cola", category="Música")
     async def stop(self, ctx):
         if ctx.voice_client:
-            self.cancel_prefetch(ctx.guild.id)
-            if ctx.guild.id in music_queues:
-                music_queues[ctx.guild.id] = []
+            self._reset(ctx.guild.id)
             ctx.voice_client.stop()
             await ctx.send("⏹️ Música detenida y cola vacía.")
         else:
@@ -255,7 +277,7 @@ class Music(commands.Cog):
     @commands.command(name="skip", help="Salta la canción actual", category="Música")
     async def skip(self, ctx):
         if ctx.voice_client and (ctx.voice_client.is_playing() or ctx.voice_client.is_paused()):
-            ctx.voice_client.stop() 
+            saltar(ctx.voice_client, ctx.guild.id)
             await ctx.send("⏭️ Canción saltada.")
         else:
             await ctx.send("No hay música reproduciéndose para saltar.")
@@ -269,6 +291,59 @@ class Music(commands.Cog):
                 await ctx.send(mensaje)
         else:
             await ctx.send("La cola está vacía.")
+
+    @commands.command(name="nowplaying", aliases=["np"], help="Muestra la canción que suena", category="Música")
+    async def nowplaying(self, ctx):
+        actual = now_playing.get(ctx.guild.id)
+        if not actual:
+            await ctx.send("No suena nada ahora.")
+            return
+        url, title = actual
+        embed = discord.Embed(title="Sonando ahora", description=f"[{title}]({url})", color=0x00ff00)
+        pendientes = len(music_queues.get(ctx.guild.id, []))
+        bucle = "🔁 Bucle activado · " if ctx.guild.id in loop_enabled else ""
+        embed.set_footer(text=f"{bucle}{pendientes} en la cola")
+        await ctx.send(embed=embed)
+
+    @commands.command(name="shuffle", help="Mezcla la cola", category="Música")
+    async def shuffle(self, ctx):
+        cola = music_queues.get(ctx.guild.id)
+        if not cola or len(cola) < 2:
+            await ctx.send("Hacen falta al menos 2 canciones en la cola.")
+            return
+        random.shuffle(cola)
+        self._start_prefetch(ctx.guild.id)  # la siguiente ha cambiado
+        await ctx.send(f"🔀 Cola mezclada ({len(cola)} canciones).")
+
+    @commands.command(name="loop", help="Repite la canción actual (activar/desactivar)", category="Música")
+    async def loop(self, ctx):
+        gid = ctx.guild.id
+        if gid in loop_enabled:
+            loop_enabled.discard(gid)
+            self._start_prefetch(gid)
+            await ctx.send("➡️ Bucle desactivado.")
+        else:
+            loop_enabled.add(gid)
+            self.cancel_prefetch(gid)
+            await ctx.send("🔁 Bucle activado: la canción actual se repetirá.")
+
+    @commands.command(name="remove", help="Quita una canción de la cola por su número", category="Música")
+    async def remove(self, ctx, posicion: int):
+        cola = music_queues.get(ctx.guild.id) or []
+        if not 1 <= posicion <= len(cola):
+            await ctx.send(f"Número no válido. La cola tiene {len(cola)} canciones.")
+            return
+        _, title = cola.pop(posicion - 1)
+        if posicion == 1 and ctx.guild.id not in loop_enabled:
+            self._start_prefetch(ctx.guild.id)  # la siguiente ha cambiado
+        await ctx.send(f"🗑️ Quitada: **{title}**")
+
+    @commands.command(name="clear", help="Vacía la cola sin parar la canción actual", category="Música")
+    async def clear(self, ctx):
+        self.cancel_prefetch(ctx.guild.id)
+        music_queues[ctx.guild.id] = []
+        await ctx.send("🧹 Cola vaciada.")
+
 
 async def setup(bot):
     await bot.add_cog(Music(bot))
