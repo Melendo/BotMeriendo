@@ -1,5 +1,6 @@
-
 import asyncio
+import random
+import time
 
 import discord
 from discord.ext import commands
@@ -7,7 +8,8 @@ from discord.ui import Button, View
 
 from src.utils.logger import logger
 from src.utils.music_service import music_service
-from src.utils.state import music_queues
+from src.utils.queue_utils import pistas_de_info, trocear
+from src.utils.state import loop_enabled, music_queues, now_playing, reset_guild, skip_once
 
 # Las opciones '-reconnect' solo son válidas para streams de red.
 # Como aquí reproducimos archivos locales descargados, no deben usarse.
@@ -16,6 +18,14 @@ ffmpeg_options = {
 }
 
 MAX_QUEUE_SIZE = 30
+CLEANUP_EVERY_SECS = 3600  # limpiar la caché de audio como mucho cada hora
+
+
+def saltar(voice_client, guild_id):
+    """Corta la canción actual; si hay bucle, esa vez no se repite."""
+    skip_once.add(guild_id)
+    voice_client.stop()
+
 
 class MusicControls(View):
     def __init__(self, ctx):
@@ -45,7 +55,7 @@ class MusicControls(View):
     @discord.ui.button(label="⏭️ Skip", style=discord.ButtonStyle.red)
     async def skip(self, interaction: discord.Interaction, button: Button):
         if self.ctx.voice_client:
-            self.ctx.voice_client.stop()
+            saltar(self.ctx.voice_client, self.ctx.guild.id)
             await interaction.response.send_message("Saltando canción...", ephemeral=True)
         else:
             await interaction.response.send_message("No estoy conectado.", ephemeral=True)
@@ -54,7 +64,9 @@ class MusicControls(View):
 class Music(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self._cleanup_started = False
+        self._last_cleanup = 0.0
+        # guild_id -> (url, tarea que descarga esa canción por adelantado)
+        self._prefetch: dict[int, tuple[str, asyncio.Task]] = {}
 
     async def _resolve_track(self, video_url: str, title: str | None = None):
         """Resuelve una entrada de cola a un archivo de audio local estable."""
@@ -64,10 +76,54 @@ class Music(commands.Cog):
             logger.warning(f"Fallo descargando {title or video_url}: {exc}")
             raise
 
+    async def _get_track(self, guild_id: int, video_url: str, title: str | None):
+        """Usa la descarga adelantada si es esta canción; si no, descarga ahora."""
+        pre = self._prefetch.pop(guild_id, None)
+        if pre:
+            url, task = pre
+            if url == video_url:
+                try:
+                    return await task
+                except Exception:
+                    pass  # falló la previa: se reintenta abajo
+            else:
+                task.cancel()
+        return await self._resolve_track(video_url, title)
+
+    def _start_prefetch(self, guild_id: int):
+        """Empieza a bajar la siguiente canción de la cola mientras suena la actual."""
+        queue = music_queues.get(guild_id)
+        if not queue:
+            return
+        url, title = queue[0]
+        actual = self._prefetch.get(guild_id)
+        if actual and actual[0] == url:
+            return
+        self.cancel_prefetch(guild_id)
+
+        async def _bajar():
+            return await music_service.download_audio(url, title=title)
+
+        task = asyncio.create_task(_bajar())
+        # Evita el aviso "Task exception was never retrieved" si nadie la espera
+        task.add_done_callback(lambda t: t.cancelled() or t.exception())
+        self._prefetch[guild_id] = (url, task)
+
+    def cancel_prefetch(self, guild_id: int):
+        pre = self._prefetch.pop(guild_id, None)
+        if pre:
+            pre[1].cancel()
+
+    def _reset(self, guild_id: int):
+        self.cancel_prefetch(guild_id)
+        reset_guild(guild_id)
+
     async def _schedule_cleanup(self):
-        if not self._cleanup_started:
-            self._cleanup_started = True
-            music_service.prune_cache_if_needed()
+        # Limpia la caché de música como mucho una vez por hora
+        ahora = time.monotonic()
+        if not self._last_cleanup or ahora - self._last_cleanup > CLEANUP_EVERY_SECS:
+            self._last_cleanup = ahora
+            await asyncio.to_thread(music_service.prune_cache_if_needed)
 
     async def play_next_song(self, ctx):
         guild_id = ctx.guild.id
@@ -75,63 +131,79 @@ class Music(commands.Cog):
         if not ctx.voice_client:
             return
 
-        if guild_id in music_queues and music_queues[guild_id]:
-            while music_queues[guild_id]:
-                video_url, title = music_queues[guild_id].pop(0)
+        # Se escribe en el canal (no ctx.send): con comandos de barra la
+        # interacción caduca a los 15 minutos y la cola puede durar más.
+        canal = ctx.channel
 
-                try:
-                    local_audio_path = await self._resolve_track(video_url, title)
-                    source = discord.FFmpegOpusAudio(local_audio_path, **ffmpeg_options)
+        # Bucle: vuelve a poner la canción que acaba de sonar, salvo si se saltó
+        saltada = guild_id in skip_once
+        skip_once.discard(guild_id)
+        actual = now_playing.get(guild_id)
+        if actual and guild_id in loop_enabled and not saltada:
+            music_queues.setdefault(guild_id, []).insert(0, actual)
+        now_playing.pop(guild_id, None)
 
-                    def after_playing(error):
-                        if error:
-                            logger.error(f"Error en reproducción: {error}")
-                        coro = self.play_next_song(ctx)
-                        fut = asyncio.run_coroutine_threadsafe(coro, self.bot.loop)
-                        try:
-                            fut.result()
-                        except Exception:
-                            pass
+        while music_queues.get(guild_id):
+            video_url, title = music_queues[guild_id].pop(0)
 
-                    ctx.voice_client.play(source, after=after_playing)
-                    embed = discord.Embed(title="Reproduciendo ahora", description=f"[{title}]({video_url})", color=0x00ff00)
-                    view = MusicControls(ctx)
-                    await ctx.send(embed=embed, view=view)
-                    return
+            try:
+                local_audio_path = await self._get_track(guild_id, video_url, title)
+                if not ctx.voice_client:
+                    return  # se desconectó mientras descargaba
+                source = discord.FFmpegOpusAudio(local_audio_path, **ffmpeg_options)
 
-                except Exception as e:
-                    logger.warning(f"Canción descartada por fallo de reproducción: {title} - {e}")
-                    continue
+                def after_playing(error):
+                    if error:
+                        logger.error(f"Error en reproducción: {error}")
+                    # No esperar aquí: este callback corre en el hilo de audio
+                    asyncio.run_coroutine_threadsafe(self.play_next_song(ctx), self.bot.loop)
 
-            await ctx.send("La cola de reproducción ha terminado.")
-            return
+                now_playing[guild_id] = (video_url, title)
+                ctx.voice_client.play(source, after=after_playing)
+                embed = discord.Embed(title="Reproduciendo ahora", description=f"[{title}]({video_url})", color=0x00ff00)
+                if guild_id in loop_enabled:
+                    embed.set_footer(text="🔁 Bucle activado")
+                view = MusicControls(ctx)
+                await canal.send(embed=embed, view=view)
+                if guild_id not in loop_enabled:
+                    self._start_prefetch(guild_id)
+                return
 
-        await ctx.send("La cola de reproducción ha terminado.")
+            except Exception as e:
+                now_playing.pop(guild_id, None)
+                logger.warning(f"Canción descartada por fallo de reproducción: {title} - {e}")
+                continue
 
-    @commands.command(name="join", help="El bot se une a tu canal de voz", category="Música")
+        await canal.send("La cola de reproducción ha terminado.")
+
+    @commands.hybrid_command(name="join", help="El bot se une a tu canal de voz", extras={"category": "Música"})
     async def join(self, ctx):
         if not ctx.author.voice:
             await ctx.send("¡Debes estar en un canal de voz!")
             return
-        
+
         channel = ctx.author.voice.channel
         if not channel.permissions_for(ctx.guild.me).connect:
             await ctx.send("No tengo permisos para conectarme a ese canal.")
             return
 
-        await channel.connect()
+        if ctx.voice_client:
+            await ctx.voice_client.move_to(channel)
+        else:
+            await channel.connect()
+        await ctx.send(f"🔊 Conectado a **{channel.name}**.")
 
-    @commands.command(name="leave", help="El bot sale del canal de voz", category="Música")
+    @commands.hybrid_command(name="leave", help="El bot sale del canal de voz", extras={"category": "Música"})
     async def leave(self, ctx):
         if ctx.voice_client:
+            self._reset(ctx.guild.id)
             await ctx.voice_client.disconnect()
-            if ctx.guild.id in music_queues:
-                music_queues[ctx.guild.id] = []
+            await ctx.send("👋 Desconectado.")
         else:
             await ctx.send("No estoy en ningún canal de voz.")
 
-    @commands.command(name="play", help="Reproduce música de YouTube (acepta URL o búsqueda)", category="Música")
-    async def play(self, ctx, *, query):
+    @commands.hybrid_command(name="play", help="Reproduce música de YouTube (acepta URL o búsqueda)", extras={"category": "Música"})
+    async def play(self, ctx, *, query: str):
         await self._schedule_cleanup()
 
         if not ctx.voice_client:
@@ -151,72 +223,47 @@ class Music(commands.Cog):
                     await ctx.send(f"⚠️ La cola está llena (máximo {MAX_QUEUE_SIZE} canciones).")
                     return
 
-                if query.startswith("http"):
-                    info = await music_service.extract_info(query, download=False)
+                es_url = query.startswith("http")
+                info = await music_service.extract_info(query if es_url else f"ytsearch1:{query}")
+                pistas = pistas_de_info(info)
+                if not es_url:
+                    pistas = pistas[:1]  # búsqueda: solo el primer resultado
 
-                    if 'entries' in info and info.get('entries'):
-                        entries = [entry for entry in info['entries'] if entry]
-                        added_count = 0
+                if not pistas:
+                    await ctx.send("No se encontraron resultados.")
+                    return
 
-                        for entry in entries:
-                            if len(music_queues[guild_id]) >= MAX_QUEUE_SIZE:
-                                break
-                            video_url = entry.get('webpage_url') or entry.get('url')
-                            video_title = entry.get('title', 'Video desconocido')
+                hueco = MAX_QUEUE_SIZE - len(music_queues[guild_id])
+                añadidas = pistas[:hueco]
+                music_queues[guild_id].extend(añadidas)
 
-                            if video_url and len(video_url) == 11 and ' ' not in video_url and '.' not in video_url:
-                                video_url = f"https://www.youtube.com/watch?v={video_url}"
-
-                            if video_url:
-                                music_queues[guild_id].append((video_url, video_title))
-                                added_count += 1
-
-                        await ctx.send(f"✅ Playlist añadida: **{info.get('title', 'Lista')}** ({added_count} canciones).")
-                        if added_count < len(entries):
-                            await ctx.send(f"⚠️ Cola llena: solo caben {MAX_QUEUE_SIZE} canciones, el resto no se añadió.")
-                        if not ctx.voice_client.is_playing() and not ctx.voice_client.is_paused():
-                            await self.play_next_song(ctx)
-                        return
-
-                    video_url = info.get('webpage_url') or info.get('url')
-                    title = info.get('title')
-                    if video_url and len(video_url) == 11 and ' ' not in video_url and '.' not in video_url:
-                        video_url = f"https://www.youtube.com/watch?v={video_url}"
-
-                    if video_url and title:
-                        music_queues[guild_id].append((video_url, title))
-                        await ctx.send(f"➕ Añadido a la cola: **{title}**")
+                es_playlist = es_url and info.get("entries") is not None
+                if es_playlist:
+                    await ctx.send(f"✅ Playlist añadida: **{info.get('title', 'Lista')}** ({len(añadidas)} canciones).")
                 else:
-                    result = await music_service.extract_info(f"ytsearch:{query}", download=False)
-                    if result and 'entries' in result and result['entries'] and result['entries'][0]:
-                        info = result['entries'][0]
-                        video_url = info.get('webpage_url') or info.get('url')
-                        title = info.get('title')
-
-                        if video_url and title:
-                            music_queues[guild_id].append((video_url, title))
-                            await ctx.send(f"➕ Añadido a la cola: **{title}**")
-                    else:
-                        await ctx.send("No se encontraron resultados.")
+                    await ctx.send(f"➕ Añadido a la cola: **{añadidas[0][1]}**")
+                if len(añadidas) < len(pistas):
+                    await ctx.send(f"⚠️ Cola llena: solo caben {MAX_QUEUE_SIZE} canciones, el resto no se añadió.")
 
                 if not ctx.voice_client.is_playing() and not ctx.voice_client.is_paused():
                     await self.play_next_song(ctx)
-            
+                elif guild_id not in loop_enabled:
+                    self._start_prefetch(guild_id)
+
             except Exception as e:
                 await ctx.send("Ocurrió un error al procesar la solicitud.")
                 logger.error(f"Error al buscar música: {e}")
 
-    @commands.command(name="stop", help="Detiene la música y limpia la cola", category="Música")
+    @commands.hybrid_command(name="stop", help="Detiene la música y limpia la cola", extras={"category": "Música"})
     async def stop(self, ctx):
         if ctx.voice_client:
+            self._reset(ctx.guild.id)
             ctx.voice_client.stop()
-            if ctx.guild.id in music_queues:
-                music_queues[ctx.guild.id] = []
             await ctx.send("⏹️ Música detenida y cola vacía.")
         else:
             await ctx.send("No hay nada reproduciéndose.")
 
-    @commands.command(name="pause", help="Pausa la música", category="Música")
+    @commands.hybrid_command(name="pause", help="Pausa la música", extras={"category": "Música"})
     async def pause(self, ctx):
         if ctx.voice_client and ctx.voice_client.is_playing():
             ctx.voice_client.pause()
@@ -224,7 +271,7 @@ class Music(commands.Cog):
         else:
             await ctx.send("No hay música reproduciéndose.")
 
-    @commands.command(name="resume", help="Reanuda la música", category="Música")
+    @commands.hybrid_command(name="resume", help="Reanuda la música", extras={"category": "Música"})
     async def resume(self, ctx):
         if ctx.voice_client and ctx.voice_client.is_paused():
             ctx.voice_client.resume()
@@ -232,22 +279,76 @@ class Music(commands.Cog):
         else:
             await ctx.send("La música no está pausada.")
 
-    @commands.command(name="skip", help="Salta la canción actual", category="Música")
+    @commands.hybrid_command(name="skip", help="Salta la canción actual", extras={"category": "Música"})
     async def skip(self, ctx):
         if ctx.voice_client and (ctx.voice_client.is_playing() or ctx.voice_client.is_paused()):
-            ctx.voice_client.stop() 
+            saltar(ctx.voice_client, ctx.guild.id)
             await ctx.send("⏭️ Canción saltada.")
         else:
             await ctx.send("No hay música reproduciéndose para saltar.")
 
-    @commands.command(name="queue", help="Muestra la cola de reproducción", category="Música")
+    @commands.hybrid_command(name="queue", help="Muestra la cola de reproducción", extras={"category": "Música"})
     async def queue(self, ctx):
         guild_id = ctx.guild.id
         if guild_id in music_queues and music_queues[guild_id]:
-            cola = "\n".join([f"{i+1}. {title}" for i, (_, title) in enumerate(music_queues[guild_id])])
-            await ctx.send(f"📜 Cola de reproducción:\n{cola}")
+            lineas = [f"{i+1}. {title}" for i, (_, title) in enumerate(music_queues[guild_id])]
+            for mensaje in trocear(lineas, cabecera="📜 Cola de reproducción:"):
+                await ctx.send(mensaje)
         else:
             await ctx.send("La cola está vacía.")
+
+    @commands.hybrid_command(name="nowplaying", aliases=["np"], help="Muestra la canción que suena", extras={"category": "Música"})
+    async def nowplaying(self, ctx):
+        actual = now_playing.get(ctx.guild.id)
+        if not actual:
+            await ctx.send("No suena nada ahora.")
+            return
+        url, title = actual
+        embed = discord.Embed(title="Sonando ahora", description=f"[{title}]({url})", color=0x00ff00)
+        pendientes = len(music_queues.get(ctx.guild.id, []))
+        bucle = "🔁 Bucle activado · " if ctx.guild.id in loop_enabled else ""
+        embed.set_footer(text=f"{bucle}{pendientes} en la cola")
+        await ctx.send(embed=embed)
+
+    @commands.hybrid_command(name="shuffle", help="Mezcla la cola", extras={"category": "Música"})
+    async def shuffle(self, ctx):
+        cola = music_queues.get(ctx.guild.id)
+        if not cola or len(cola) < 2:
+            await ctx.send("Hacen falta al menos 2 canciones en la cola.")
+            return
+        random.shuffle(cola)
+        self._start_prefetch(ctx.guild.id)  # la siguiente ha cambiado
+        await ctx.send(f"🔀 Cola mezclada ({len(cola)} canciones).")
+
+    @commands.hybrid_command(name="loop", help="Repite la canción actual (activar/desactivar)", extras={"category": "Música"})
+    async def loop(self, ctx):
+        gid = ctx.guild.id
+        if gid in loop_enabled:
+            loop_enabled.discard(gid)
+            self._start_prefetch(gid)
+            await ctx.send("➡️ Bucle desactivado.")
+        else:
+            loop_enabled.add(gid)
+            self.cancel_prefetch(gid)
+            await ctx.send("🔁 Bucle activado: la canción actual se repetirá.")
+
+    @commands.hybrid_command(name="remove", help="Quita una canción de la cola por su número", extras={"category": "Música"})
+    async def remove(self, ctx, posicion: int):
+        cola = music_queues.get(ctx.guild.id) or []
+        if not 1 <= posicion <= len(cola):
+            await ctx.send(f"Número no válido. La cola tiene {len(cola)} canciones.")
+            return
+        _, title = cola.pop(posicion - 1)
+        if posicion == 1 and ctx.guild.id not in loop_enabled:
+            self._start_prefetch(ctx.guild.id)  # la siguiente ha cambiado
+        await ctx.send(f"🗑️ Quitada: **{title}**")
+
+    @commands.hybrid_command(name="clear", help="Vacía la cola sin parar la canción actual", extras={"category": "Música"})
+    async def clear(self, ctx):
+        self.cancel_prefetch(ctx.guild.id)
+        music_queues[ctx.guild.id] = []
+        await ctx.send("🧹 Cola vaciada.")
+
 
 async def setup(bot):
     await bot.add_cog(Music(bot))

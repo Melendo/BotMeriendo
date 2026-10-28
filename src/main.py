@@ -11,10 +11,27 @@ validate_config()
 
 # Configuración del bot
 descripcion = "Bot todopoderoso del linaje Meriendo"
-intents = discord.Intents.all()
+# Solo los permisos (intents) que el bot usa de verdad:
+# - default(): servidores, canales de voz, mensajes...
+# - message_content: leer los comandos con prefijo (!play)
+# - members: evento on_member_join (bienvenida por DM)
+intents = discord.Intents.default()
 intents.message_content = True
+intents.members = True
 
 bot = commands.Bot(command_prefix=PREFIX, intents=intents, description=descripcion)
+
+
+async def sync_slash_commands():
+    """Registra los comandos /barra en Discord (se ejecuta al iniciar sesión)."""
+    try:
+        synced = await bot.tree.sync()
+        logger.info(f"Comandos de barra sincronizados: {len(synced)}")
+    except Exception as e:
+        # Si falla, los comandos con prefijo siguen funcionando
+        logger.error(f"No se pudieron sincronizar los comandos de barra: {e}")
+
+bot.setup_hook = sync_slash_commands
 
 # Función para cargar extensiones
 async def load_extensions():

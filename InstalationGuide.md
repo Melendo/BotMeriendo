@@ -56,9 +56,9 @@ docker-compose down
    pip install -r requirements.txt
    ```
 
-3. Ejecuta el bot:
+3. Ejecuta el bot (desde la raíz del repo):
    ```bash
-   python src/main.py
+   python -m src.main
    ```
 
 ## Estructura del Proyecto

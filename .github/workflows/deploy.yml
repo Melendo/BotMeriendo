@@ -3,11 +3,36 @@ name: Deploy en self-hosted runner
 on:
   push:
     branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
   workflow_dispatch: # Permite ejecutarlo manualmente desde la web
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11" # Igual que la imagen de Docker
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Compile check
+        run: python -m compileall -q src
+
+      - name: Run tests
+        run: pytest -q
+
   deploy:
-    runs-on: self-hosted 
+    # Solo se despliega desde main y si los tests pasan
+    needs: test
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: self-hosted
     steps:
       - name: Check out code
         uses: actions/checkout@v4
@@ -16,10 +41,23 @@ jobs:
         run: |
           echo "${{ secrets.ENV_FILE }}" > .env
 
+      - name: Create cookies.txt (opcional)
+        # Si existe el secreto YT_COOKIES se escribe cookies.txt;
+        # si no, el bot funciona sin cookies como antes.
+        env:
+          YT_COOKIES: ${{ secrets.YT_COOKIES }}
+        run: |
+          if [ -n "$YT_COOKIES" ]; then
+            printf '%s\n' "$YT_COOKIES" > cookies.txt
+            echo "cookies.txt creado desde el secreto"
+          else
+            echo "Sin secreto YT_COOKIES: se despliega sin cookies"
+          fi
+
       - name: Build and Deploy
         run: |
           # Detiene los contenedores, reconstruye la imagen y levanta en segundo plano
           docker compose up -d --build --force-recreate
-          
+
           # Limpia imágenes antiguas para no llenar la SD de la Pi
           docker image prune -f

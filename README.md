@@ -79,9 +79,9 @@ cp .env.example .env
 ## Ejecución y Uso
 
 ### Entorno de Desarrollo
-Para levantar la aplicación localmente en modo desarrollo:
+Para levantar la aplicación localmente en modo desarrollo (desde la raíz del repo):
 ```bash
-python src/main.py
+python -m src.main
 ```
 
 ### Ejecución con Docker
@@ -100,9 +100,35 @@ Si prefieres ejecutar el bot de forma aislada y en segundo plano mediante conten
   docker-compose down
   ```
 
+### Comandos
+Todos funcionan con el prefijo (`!play`) y como comando de barra (`/play`). `!comandos` los lista.
+
+| Comando | Qué hace |
+| :--- | :--- |
+| `play <url o búsqueda>` | Añade una canción o una playlist de YouTube (máx. 30 en cola) |
+| `pause` / `resume` / `skip` / `stop` | Controlan la reproducción |
+| `queue` | Muestra la cola |
+| `nowplaying` (`np`) | Muestra la canción que suena |
+| `shuffle` | Mezcla la cola |
+| `loop` | Repite la canción actual (activar/desactivar) |
+| `remove <número>` | Quita una canción de la cola |
+| `clear` | Vacía la cola sin parar la canción actual |
+| `join` / `leave` | Entra o sale del canal de voz |
+| `ping` / `hola` / `comandos` | Utilidades |
+
+Los comandos de barra se registran al arrancar. La primera vez Discord puede tardar un rato en mostrarlos.
+
+### Cookies de YouTube
+Si YouTube responde *"Sign in to confirm you're not a bot"*, el bot necesita cookies:
+- **Local:** exporta tus cookies a `cookies.txt` en la raíz (ver `cookies.example.txt`). Está en `.gitignore`: no se sube.
+- **Deploy con GitHub Actions:** crea el secreto `YT_COOKIES` con el contenido de ese archivo. El workflow escribe `cookies.txt` antes de construir la imagen.
+
 ### Pruebas (Testing)
-> [!NOTE]
-> Este proyecto no cuenta actualmente con una suite de pruebas automatizadas. Para verificar su correcto funcionamiento, inicia el bot, invítalo a un servidor de Discord y prueba comandos interactivos como `!play` o `!help`.
+```bash
+pip install -r requirements-dev.txt
+pytest -q
+```
+Los tests no se conectan a Discord ni a YouTube. GitHub Actions los ejecuta en cada push y Pull Request; el deploy solo corre si pasan.
 
 ## Arquitectura y Stack Tecnológico
 El bot está estructurado modularmente utilizando la extensión de "Cogs" de `discord.py` para separar los comandos y el ciclo de vida del bot de manera limpia y escalable.
@@ -121,12 +147,16 @@ botMeriendo/
 │   │   └── music.py   # Lógica y comandos de reproducción musical
 │   ├── utils/         # Clases y funciones auxiliares
 │   │   ├── logger.py  # Configuración rotativa y formateada de logs
+│   │   ├── music_service.py # Descarga y caché de audio con yt-dlp
+│   │   ├── queue_utils.py   # Funciones puras de la cola (fáciles de probar)
 │   │   └── state.py   # Estado compartido de colas y reproducción
 │   ├── config.py      # Validación y carga de variables de entorno
 │   └── main.py        # Punto de entrada y arranque de la aplicación
+├── tests/             # Tests con pytest
 ├── Dockerfile         # Receta de construcción de la imagen de Docker
 ├── docker-compose.yml # Orquestación del contenedor
-└── requirements.txt   # Dependencias de Python
+├── requirements.txt   # Dependencias de Python
+└── requirements-dev.txt # Dependencias para tests
 ```
 
 ## Contribuciones
